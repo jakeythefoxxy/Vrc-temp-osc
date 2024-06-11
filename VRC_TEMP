@@ -1,0 +1,115 @@
+import requests
+from pythonosc import udp_client
+import time
+import json
+import os
+
+# Configuration file path
+CONFIG_FILE = 'config.json'
+
+def save_config(config):
+    with open(CONFIG_FILE, 'w') as file:
+        json.dump(config, file, indent=4)
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as file:
+            return json.load(file)
+    return None
+
+def setup_config():
+    print("This is the first time setup.")
+
+    config = {}
+
+    config['API_KEY'] = input("Enter your OpenWeatherMap API key (visit https://home.openweathermap.org/api_keys to get one): ")
+    config['ZIP_CODE'] = input("Enter your ZIP code: ")
+    config['OSC_IP'] = '127.0.0.1'
+    config['OSC_PORT'] = 9000
+    config['OSC_ADDRESS'] = input("Enter the OSC parameter name (default is /avatar/parameters/MaterialInt): ") or '/avatar/parameters/MaterialInt'
+    
+    num_temps = int(input("Enter the number of temperature ranges: "))
+    config['temperature_ranges'] = []
+
+    for i in range(num_temps):
+        label = input(f"Enter the label for temperature range {i+1} (e.g., Freezing, Cold, etc.): ")
+        if i == 0:
+            upper = float(input(f"Enter the upper bound for '{label}': "))
+            lower = float('-inf')
+        elif i == num_temps - 1:
+            lower = upper
+            upper = float('inf')
+        else:
+            lower = upper
+            upper = float(input(f"Enter the upper bound for '{label}': "))
+        
+        config['temperature_ranges'].append({
+            'label': label,
+            'lower': lower,
+            'upper': upper,
+            'int_value': i+1
+        })
+
+    save_config(config)
+
+    print("\nSetup complete! If you want to make changes to the configuration, you can either edit the config file directly or delete the config file to reset the program.")
+    
+    return config
+
+def get_temperature(api_key, zip_code):
+    url = f"http://api.openweathermap.org/data/2.5/weather?zip={zip_code},us&appid={api_key}&units=imperial"
+    response = requests.get(url)
+    response.raise_for_status() 
+    data = response.json()
+    return data['main']['temp']
+
+def map_temperature_to_int(temp, temp_ranges):
+    for temp_range in temp_ranges:
+        if temp_range['lower'] <= temp < temp_range['upper']:
+            return temp_range['int_value']
+    return 1  # Default value if something goes wrong
+
+def send_to_vrchat(osc_client, osc_address, material_int):
+    osc_client.send_message(osc_address, material_int)
+    print(f"Sent MaterialInt value {material_int} to VRChat")
+
+def show_instructions():
+    instructions = """
+    Instructions:
+    1. Ensure the OSC parameter name specified during the script configuration matches the parameter name in Unity.
+    2. If you have more than 2 options for the parameter, it must be an integer (int).
+    3. The script fetches the temperature every 5 minutes and updates the MaterialInt parameter accordingly.
+    4. Make sure your VRChat avatar is set up to receive OSC data.
+    5. Adjust and troubleshoot as necessary.
+
+    Do you agree to these instructions? (yes/no)
+    """
+    print(instructions)
+    response = input().strip().lower()
+    return response == 'yes'
+
+def main():
+    config = load_config()
+    if not config:
+        config = setup_config()
+        if not show_instructions():
+            print("You must agree to the instructions to continue.")
+            return
+
+    osc_client = udp_client.SimpleUDPClient(config['OSC_IP'], config['OSC_PORT'])
+
+    while True:
+        try:
+            temperature = get_temperature(config['API_KEY'], config['ZIP_CODE'])
+            material_int = map_temperature_to_int(temperature, config['temperature_ranges'])
+            send_to_vrchat(osc_client, config['OSC_ADDRESS'], material_int)
+            print(f"The current temperature is {temperature}F which maps to MaterialInt value {material_int}.")
+        except requests.HTTPError as http_err:
+            print(f"HTTP error occurred: {http_err}")
+        except Exception as err:
+            print(f"An error occurred: {err}")
+        
+        time.sleep(300)
+
+if __name__ == "__main__":
+    main()
